@@ -438,16 +438,12 @@ async fn render_job_reuses_a_variant_stored_after_the_callers_catalog_check() {
     );
 }
 
-/// The whole flow against real S3 (MinIO via `scripts/test-s3.sh`). Skipped otherwise.
-#[tokio::test]
-async fn end_to_end_on_s3() {
-    let Some(s3) = crate::store::test_s3() else {
-        eprintln!("skipping: RADIANT_TEST_S3_BUCKET not set (run scripts/test-s3.sh)");
-        return;
-    };
-    let store: Arc<dyn BlobStore> = Arc::new(s3);
+/// The whole flow against a real backend: upload, original, variants, and a catalog rebuilt
+/// from the store alone.
+async fn end_to_end(store: Arc<dyn BlobStore>) {
     let svc = service_with(store.clone(), ServiceConfig::default()).await;
-    let bytes = jpeg(120, 80);
+    // Unique content, because real backends outlive a single test.
+    let bytes = jpeg(120, 80 + (std::process::id() % 50));
     let up = svc.upload(bytes.clone()).await.unwrap();
 
     let (orig, _, _) = image(
@@ -469,8 +465,14 @@ async fn end_to_end_on_s3() {
             .unwrap(),
     );
     wait_for_variant(&svc, &up.hash, "full", Format::Png).await;
+    // Served from the store the second time.
+    image(
+        svc.get(&req(up.hash, "40s", Format::Webp), None)
+            .await
+            .unwrap(),
+    );
 
-    // A fresh catalog rebuilds itself from the bucket.
+    // A fresh catalog rebuilds itself from the store.
     let svc2 = service_with(store, ServiceConfig::default()).await;
     let (again, _, _) = image(
         svc2.get(&req(up.hash, "full", Format::Jpeg), None)
@@ -484,5 +486,31 @@ async fn end_to_end_on_s3() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!((row.format, row.width, row.height), (Format::Jpeg, 120, 80));
+    assert_eq!((row.format, row.width), (Format::Jpeg, 120));
+    let (v2, _, _) = image(
+        svc2.get(&req(up.hash, "40s", Format::Webp), None)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(v2, v, "deterministic re-render after losing the catalog");
+}
+
+/// Against S3 (`scripts/test-s3.sh`). Skipped otherwise.
+#[tokio::test]
+async fn end_to_end_on_s3() {
+    let Some(s3) = crate::store::test_s3() else {
+        eprintln!("skipping: RADIANT_TEST_S3_BUCKET not set (run scripts/test-s3.sh)");
+        return;
+    };
+    end_to_end(Arc::new(s3)).await;
+}
+
+/// Against a Cask cluster (`scripts/test-cask.sh`). Skipped otherwise.
+#[tokio::test]
+async fn end_to_end_on_cask() {
+    let Some(cask) = crate::store::test_cask() else {
+        eprintln!("skipping: RADIANT_TEST_CASK_URLS not set (run scripts/test-cask.sh)");
+        return;
+    };
+    end_to_end(Arc::new(cask)).await;
 }

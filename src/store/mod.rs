@@ -11,6 +11,7 @@
 //! The catalog records the [`BlobRef`] returned by [`BlobStore::put`], so reads never need to
 //! know the addressing scheme.
 
+mod cask;
 mod object;
 
 use std::fmt;
@@ -18,6 +19,7 @@ use std::fmt;
 use async_trait::async_trait;
 use bytes::Bytes;
 
+pub use cask::{CaskConfig, CaskStore};
 pub use object::{ObjectBlobStore, S3Config};
 
 use crate::format::Format;
@@ -77,5 +79,7 @@ pub trait BlobStore: Send + Sync + 'static {
 
 #[cfg(test)]
 pub(crate) mod conformance;
+#[cfg(test)]
+pub(crate) use cask::tests::test_cask;
 #[cfg(test)]
 pub(crate) use object::tests::test_s3;

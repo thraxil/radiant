@@ -1,5 +1,21 @@
 {
   "nodes": {
+    "cask": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1794218517,
+        "narHash": "sha256-dLVssnbMruC4cRvBQ50Waex9/MdKE9fFVyooiUUw7sU=",
+        "owner": "thraxil",
+        "repo": "cask",
+        "rev": "62f44f3ebe2dcfc19093adff93e0e0e66b6ae823",
+        "type": "github"
+      },
+      "original": {
+        "owner": "thraxil",
+        "repo": "cask",
+        "type": "github"
+      }
+    },
     "flake-utils": {
       "inputs": {
         "systems": "systems"
@@ -36,6 +52,7 @@
     },
     "root": {
       "inputs": {
+        "cask": "cask",
         "flake-utils": "flake-utils",
         "nixpkgs": "nixpkgs",
         "rust-overlay": "rust-overlay"

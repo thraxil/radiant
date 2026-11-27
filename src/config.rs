@@ -52,6 +52,16 @@ pub struct Config {
     #[arg(long, env = "RADIANT_S3_ENDPOINT")]
     pub s3_endpoint: Option<String>,
 
+    /// Cask node URLs for the `cask` backend, comma-separated, e.g.
+    /// `http://cask1:8080,http://cask2:8080`. Requests rotate across them and fail over.
+    #[arg(
+        long,
+        env = "RADIANT_CASK_URL",
+        value_delimiter = ',',
+        required_if_eq("backend", "cask")
+    )]
+    pub cask_url: Vec<String>,
+
     /// Per-request timeout for the storage backend, in seconds.
     #[arg(long, env = "RADIANT_BACKEND_TIMEOUT_SECS", default_value_t = 30)]
     pub backend_timeout_secs: u64,
@@ -129,6 +139,8 @@ pub enum Backend {
     Fs,
     /// Amazon S3 or an S3-compatible store.
     S3,
+    /// A Cask cluster.
+    Cask,
 }
 
 impl Config {

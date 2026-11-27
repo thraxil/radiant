@@ -20,6 +20,8 @@ jobs:
         run: nix develop --command cargo test --locked
       - name: test against S3 (versitygw)
         run: nix develop --command scripts/test-s3.sh
+      - name: test against a Cask cluster
+        run: nix develop --command scripts/test-cask.sh
 
   docker:
     runs-on: ubuntu-latest

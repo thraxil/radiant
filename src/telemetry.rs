@@ -30,6 +30,7 @@ pub const UPLOADS: &str = "radiant_uploads_total";
 pub const UPLOAD_SIZE: &str = "radiant_upload_size_bytes";
 pub const LIMIT_REJECTIONS: &str = "radiant_limit_rejections_total";
 pub const CATALOG_REPAIRS: &str = "radiant_catalog_repairs_total";
+pub const CASK_NODE_FAILURES: &str = "radiant_cask_node_failures_total";
 pub const BUILD_INFO: &str = "radiant_build_info";
 
 const LATENCY_BUCKETS: &[f64] = &[

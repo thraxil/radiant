@@ -10,7 +10,7 @@ use radiant::catalog::Catalog;
 use radiant::config::{Backend, Config, LogFormat};
 use radiant::http::AppState;
 use radiant::service::ImageService;
-use radiant::store::{BlobStore, ObjectBlobStore, S3Config};
+use radiant::store::{BlobStore, CaskConfig, CaskStore, ObjectBlobStore, S3Config};
 use radiant::telemetry::{self, InstrumentedStore};
 
 #[tokio::main]
@@ -43,6 +43,13 @@ async fn main() -> anyhow::Result<()> {
                 timeout: Duration::from_secs(config.backend_timeout_secs),
             })
             .context("configuring s3 backend")?,
+        ),
+        Backend::Cask => Arc::new(
+            CaskStore::new(&CaskConfig {
+                urls: config.cask_url.clone(),
+                timeout: Duration::from_secs(config.backend_timeout_secs),
+            })
+            .context("configuring cask backend")?,
         ),
     };
     let store: Arc<dyn BlobStore> = Arc::new(InstrumentedStore::new(store));

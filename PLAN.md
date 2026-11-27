@@ -241,8 +241,9 @@ and each can also be passed as a CLI flag.
     (for S3-compatible stores; `http://` allowed; path-style requests), plus the standard
     `AWS_*` credential variables. `RADIANT_BACKEND_TIMEOUT_SECS` (30) is the per-request timeout.
     Objects get a `Content-Type`, so the bucket can be browsed directly.
-  - cask: `RADIANT_CASK_URL` (one node URL or a comma-separated list with failover),
-    `RADIANT_CASK_TIMEOUT_SECS`
+  - cask: `RADIANT_CASK_URL`, one node URL or a comma-separated list. Requests rotate across
+    the nodes and fail over on connection errors, timeouts, 5xx, bad responses or corrupt
+    data. `RADIANT_BACKEND_TIMEOUT_SECS` is the per-request timeout.
 - `RADIANT_JPEG_QUALITY`, `RADIANT_LOG_FORMAT` (`json` | `pretty`)
 
 ## Metrics (Prometheus)
@@ -260,6 +261,7 @@ and each can also be passed as a CLI flag.
 - `radiant_uploads_total{outcome="created|duplicate|rejected|error"}`, `radiant_upload_size_bytes`
 - `radiant_limit_rejections_total{limit="input_pixels|output_dimension|frames|animation_pixels|decode_memory|upload_bytes"}`
 - `radiant_catalog_repairs_total{kind="original_recovered|variant_blob_missing|original_blob_missing"}`
+- `radiant_cask_node_failures_total{node,op="read|write|ping"}`
 - `radiant_build_info{version}`
 
 ## Testing strategy
@@ -272,14 +274,17 @@ and each can also be passed as a CLI flag.
   - S3: `scripts/test-s3.sh` starts versitygw (an S3 gateway over a temp directory, from the
     Nix shell) and runs the S3-gated tests. CI runs it too. MinIO was the plan, but it has been
     removed from nixpkgs (abandoned upstream).
-  - Cask: against a real cask node, which builds from its flake.
+  - Cask: unit tests against an in-process fake node (healthy, 500s, corrupt, refusing writes,
+    down) cover failover. `scripts/test-cask.sh` starts a real 3-node cluster
+    (`scripts/cask-cluster.sh`) and runs conformance, failover from a dead node and the
+    end-to-end service test. Cask is built in our flake from `github:thraxil/cask`. CI runs it.
 - HTTP tests through `axum` + `tower::ServiceExt::oneshot` against an in-memory backend.
 - Compatibility check (optional, later): a script that sends the same URLs to reticulum and
   radiant and compares status, redirect target, content type, and dimensions.
 
 ## Milestones
 
-Status: M0–M7 are done. M8 (Cask backend) is next.
+Status: M0–M8 are done. M9 (migration tool) is next.
 
 - **M0 Skeleton**: `cargo init`, axum app, config, tracing, `/healthz`, CI (fmt, clippy, test),
   Nix packaging, Dockerfile.
@@ -293,7 +298,7 @@ Status: M0–M7 are done. M8 (Cask backend) is next.
 - **M5 Upload**: multipart, key check, sniffing, idempotency, `size_hints`, upload form.
 - **M6 Hardening**: all limits, timeouts, metrics, graceful shutdown.
 - **M7 S3 backend**: `object_store`, S3 integration tests (versitygw).
-- **M8 Cask backend**: reqwest client, multi-node failover, integration tests against real cask.
+- **M8 Cask backend**: reqwest client, multi-node failover, integration tests against a real cluster.
 - **M9 Migration tool**: `radiant import` that walks a reticulum upload directory
   (`aa/bb/…/full.<ext>`) and pushes originals into the configured backend. Existing scaled
   versions could optionally be imported into the catalog as well.
@@ -324,5 +329,11 @@ Status: M0–M7 are done. M8 (Cask backend) is next.
   "no such key".
 - object_store's `aws` feature brings in aws-lc-rs, a C build. It works with only a C
   compiler, but it makes a clean Docker build take about 5 minutes.
+- Cask: a 404 from a healthy node is trusted (the node asks the cluster), so it isn't retried
+  on other nodes. Every blob read is checked against its SHA-1 key. `"success": false` from
+  `POST /` is a failure. Each node failure is logged and counted
+  (`radiant_cask_node_failures_total{node,op}`), so a dead node is visible while failover
+  hides it from clients. Cask can't delete, so variants re-rendered with different bytes
+  leave their old blobs behind.
 - Single-flight: the first request for a missing variant spawns the render. Later requests
   wait on it. The render is stored even if every waiter times out or disconnects.
