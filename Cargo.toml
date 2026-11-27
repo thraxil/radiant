@@ -12,7 +12,7 @@ clap = { version = "4.6.10", features = ["derive", "env"] }
 fast_image_resize = { version = "6.2.0", features = ["image"] }
 httpdate = "1.0.3"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
-libwebp-sys = "0.9"
+libwebp-sys = "0.14"
 metrics = "0.24.6"
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 object_store = { version = "0.14.2", default-features = false, features = ["aws", "fs"] }
