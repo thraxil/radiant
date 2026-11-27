@@ -41,7 +41,19 @@ fn key_matches(expected: &str, given: &str) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+/// Turns a multipart error into a response, counting oversized uploads as a limit rejection.
+fn multipart_error(e: axum::extract::multipart::MultipartError) -> Response {
+    if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        crate::telemetry::limit_rejected("upload_bytes");
+    }
+    (e.status(), e.body_text()).into_response()
+}
+
 pub(super) async fn upload(State(state): State<AppState>, mut multipart: Multipart) -> Response {
+    // Taken before reading the body: multipart is streamed, so waiting here holds no memory.
+    let Ok(_permit) = state.upload_permits.acquire().await else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "shutting down").into_response();
+    };
     let mut image: Option<Bytes> = None;
     let mut key: Option<String> = None;
     let mut size_hints = String::new();
@@ -51,7 +63,7 @@ pub(super) async fn upload(State(state): State<AppState>, mut multipart: Multipa
         let field = match multipart.next_field().await {
             Ok(Some(f)) => f,
             Ok(None) => break,
-            Err(e) => return (e.status(), e.body_text()).into_response(),
+            Err(e) => return multipart_error(e),
         };
         let name = field.name().unwrap_or_default().to_owned();
         let read = match name.as_str() {
@@ -61,7 +73,7 @@ pub(super) async fn upload(State(state): State<AppState>, mut multipart: Multipa
             _ => Ok(()), // ignore unknown fields
         };
         if let Err(e) = read {
-            return (e.status(), e.body_text()).into_response();
+            return multipart_error(e);
         }
     }
 

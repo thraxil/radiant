@@ -65,6 +65,23 @@ pub struct Config {
     )]
     pub max_animation_pixels: u64,
 
+    /// Maximum uploads processed at once. Each holds up to `max_upload_bytes` in memory.
+    /// Further uploads wait.
+    #[arg(long, env = "RADIANT_MAX_CONCURRENT_UPLOADS", default_value_t = 8)]
+    pub max_concurrent_uploads: usize,
+
+    /// Whole-request timeout in seconds (408). Keep it above `scale_timeout_secs`.
+    #[arg(long, env = "RADIANT_REQUEST_TIMEOUT_SECS", default_value_t = 120)]
+    pub request_timeout_secs: u64,
+
+    /// Serve Prometheus metrics on `/metrics`.
+    #[arg(long, env = "RADIANT_METRICS", default_value_t = true, action = clap::ArgAction::Set)]
+    pub metrics: bool,
+
+    /// Seconds to wait on shutdown for in-progress renders to be stored.
+    #[arg(long, env = "RADIANT_SHUTDOWN_DRAIN_SECS", default_value_t = 10)]
+    pub shutdown_drain_secs: u64,
+
     /// Maximum concurrent scaling jobs. Defaults to the number of CPUs.
     #[arg(long, env = "RADIANT_SCALE_CONCURRENCY")]
     pub scale_concurrency: Option<usize>,

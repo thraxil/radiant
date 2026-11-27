@@ -8,6 +8,8 @@ use std::time::Duration;
 use bytes::Bytes;
 use tokio::sync::{Semaphore, watch};
 
+use metrics::{counter, gauge, histogram};
+
 use crate::catalog::{Catalog, CatalogError, OriginalRow, VariantRow};
 use crate::format::Format;
 use crate::hash::Sha1Hash;
@@ -15,6 +17,7 @@ use crate::imaging::{self, EncodeSettings, ImagingError, Limits};
 use crate::request::ImageRequest;
 use crate::spec::SizeSpec;
 use crate::store::{BlobName, BlobStore, StoreError};
+use crate::telemetry::{self as m, limit_rejected};
 
 #[derive(Clone, Debug)]
 pub struct ServiceConfig {
@@ -154,6 +157,31 @@ impl ImageService {
         req: &ImageRequest,
         if_none_match: Option<&str>,
     ) -> Result<Served, ServiceError> {
+        let result = self.get_inner(req, if_none_match).await;
+        match &result {
+            Ok((Served::NotModified { .. }, _)) => {
+                counter!(m::IMAGES_SERVED, "source" => "not_modified").increment(1);
+            }
+            Ok((Served::Image { .. }, source)) => {
+                counter!(m::IMAGES_SERVED, "source" => *source).increment(1);
+            }
+            Err(ServiceError::TooLarge(e)) => {
+                if let Some(limit) = e.limit_name() {
+                    limit_rejected(limit);
+                }
+            }
+            Err(ServiceError::Timeout) => counter!(m::SCALE_TIMEOUTS).increment(1),
+            Err(_) => {}
+        }
+        result.map(|(served, _)| served)
+    }
+
+    /// Like [`Self::get`], but also says where the image came from (a metrics label).
+    async fn get_inner(
+        &self,
+        req: &ImageRequest,
+        if_none_match: Option<&str>,
+    ) -> Result<(Served, &'static str), ServiceError> {
         let Some((orig, fetched)) = self.original(&req.hash).await? else {
             return Err(ServiceError::NotFound);
         };
@@ -162,17 +190,20 @@ impl ImageService {
             // The original itself. Its sha1 is its hash, so it serves as the ETag.
             let etag = req.hash.to_string();
             if etag_matches(if_none_match, &etag) {
-                return Ok(Served::NotModified { etag });
+                return Ok((Served::NotModified { etag }, "not_modified"));
             }
             let bytes = match fetched {
                 Some(b) => b,
                 None => self.fetch_original(&orig).await?,
             };
-            return Ok(Served::Image {
-                bytes,
-                format: orig.format,
-                etag,
-            });
+            return Ok((
+                Served::Image {
+                    bytes,
+                    format: orig.format,
+                    etag,
+                },
+                "original",
+            ));
         }
 
         // Reject over-limit requests before fetching or decoding anything.
@@ -186,38 +217,69 @@ impl ImageService {
             .await?
         {
             if etag_matches(if_none_match, &row.etag) {
-                return Ok(Served::NotModified { etag: row.etag });
+                return Ok((Served::NotModified { etag: row.etag }, "not_modified"));
             }
             match self.inner.store.get(&row.blob_ref).await? {
                 Some(bytes) => {
-                    return Ok(Served::Image {
-                        bytes,
-                        format: req.format,
-                        etag: row.etag,
-                    });
+                    return Ok((
+                        Served::Image {
+                            bytes,
+                            format: req.format,
+                            etag: row.etag,
+                        },
+                        "variant_stored",
+                    ));
                 }
-                None => tracing::warn!(
-                    hash = %req.hash, spec = %req.spec, format = %req.format, blob = %row.blob_ref,
-                    "variant in catalog but missing from store; re-rendering"
-                ),
+                None => {
+                    counter!(m::CATALOG_REPAIRS, "kind" => "variant_blob_missing").increment(1);
+                    tracing::warn!(
+                        hash = %req.hash, spec = %req.spec, format = %req.format, blob = %row.blob_ref,
+                        "variant in catalog but missing from store; re-rendering"
+                    );
+                }
             }
         }
 
         let rendered = self.render_shared(req, orig, fetched).await?;
         if etag_matches(if_none_match, &rendered.etag) {
-            return Ok(Served::NotModified {
-                etag: rendered.etag,
-            });
+            return Ok((
+                Served::NotModified {
+                    etag: rendered.etag,
+                },
+                "not_modified",
+            ));
         }
-        Ok(Served::Image {
-            bytes: rendered.bytes,
-            format: req.format,
-            etag: rendered.etag,
-        })
+        Ok((
+            Served::Image {
+                bytes: rendered.bytes,
+                format: req.format,
+                etag: rendered.etag,
+            },
+            "variant_rendered",
+        ))
     }
 
     /// Stores an uploaded image. Uploading the same bytes again is a no-op.
     pub async fn upload(&self, bytes: Bytes) -> Result<Uploaded, ServiceError> {
+        let result = self.upload_inner(bytes).await;
+        match &result {
+            Ok(u) => {
+                let outcome = if u.created { "created" } else { "duplicate" };
+                counter!(m::UPLOADS, "outcome" => outcome).increment(1);
+                histogram!(m::UPLOAD_SIZE).record(u.length as f64);
+            }
+            Err(ServiceError::BadUpload(e)) => {
+                counter!(m::UPLOADS, "outcome" => "rejected").increment(1);
+                if let Some(limit) = e.limit_name() {
+                    limit_rejected(limit);
+                }
+            }
+            Err(_) => counter!(m::UPLOADS, "outcome" => "error").increment(1),
+        }
+        result
+    }
+
+    async fn upload_inner(&self, bytes: Bytes) -> Result<Uploaded, ServiceError> {
         let limits = *self.limits();
         let (hash, info, bytes) = tokio::task::spawn_blocking(move || {
             let info = imaging::probe(&bytes, &limits);
@@ -314,12 +376,14 @@ impl ImageService {
             height: info.height,
         };
         self.inner.catalog.put_original(&row).await?;
+        counter!(m::CATALOG_REPAIRS, "kind" => "original_recovered").increment(1);
         tracing::info!(%hash, format = %info.format, "recovered catalog row for original");
         Ok(Some((row, Some(bytes))))
     }
 
     async fn fetch_original(&self, orig: &OriginalRow) -> Result<Bytes, ServiceError> {
         self.inner.store.get(&orig.blob_ref).await?.ok_or_else(|| {
+            counter!(m::CATALOG_REPAIRS, "kind" => "original_blob_missing").increment(1);
             tracing::error!(hash = %orig.hash, blob = %orig.blob_ref, "original in catalog but missing from store");
             ServiceError::NotFound
         })
@@ -336,7 +400,10 @@ impl ImageService {
         let mut rx = {
             let mut inflight = self.inner.inflight.lock().expect("inflight lock");
             match inflight.get(&key) {
-                Some(rx) => rx.clone(),
+                Some(rx) => {
+                    counter!(m::SINGLEFLIGHT_COALESCED).increment(1);
+                    rx.clone()
+                }
                 None => {
                     let (tx, rx) = watch::channel(None);
                     inflight.insert(key, rx.clone());
@@ -367,13 +434,54 @@ impl ImageService {
     ) {
         // Removes the in-flight entry however this task ends, panics included.
         let _guard = InflightGuard { svc: &self, key };
+
+        // A request can check the catalog, miss, and get here just after another render of the
+        // same variant finished and left the in-flight map. Check again rather than re-render.
+        if let Some(stored) = self.stored_variant(key).await {
+            tx.send_replace(Some(Ok(stored)));
+            return;
+        }
+
         let result = self.render(key, &orig, fetched).await;
         tx.send_replace(Some(result.clone()));
         if let Ok(rendered) = result
             && let Err(e) = self.persist(key, &rendered).await
         {
             // Not fatal: the next request re-renders.
+            counter!(m::VARIANT_STORE_FAILURES).increment(1);
             tracing::warn!(hash = %key.0, spec = %key.1, format = %key.2, error = %e, "failed to store variant");
+        }
+    }
+
+    /// The variant, if the catalog has it and the blob is in the store. Errors count as a miss.
+    async fn stored_variant(&self, (hash, spec, format): VariantKey) -> Option<Rendered> {
+        let row = self
+            .inner
+            .catalog
+            .get_variant(&hash, &spec, format)
+            .await
+            .ok()??;
+        let bytes = self.inner.store.get(&row.blob_ref).await.ok()??;
+        Some(Rendered {
+            bytes,
+            etag: row.etag,
+        })
+    }
+
+    /// Waits up to `timeout` for in-progress renders to finish and be stored. Call this on
+    /// shutdown. Returns false if renders were still running at the deadline.
+    pub async fn drain(&self, timeout: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let remaining = self.inner.inflight.lock().map_or(0, |m| m.len());
+            if remaining == 0 {
+                return true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                tracing::warn!(remaining, "shutting down with renders still in progress");
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 
@@ -387,24 +495,34 @@ impl ImageService {
             Some(b) => b,
             None => self.fetch_original(orig).await?,
         };
-        let permit = self
-            .inner
-            .scale_permits
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|e| ServiceError::Internal(e.to_string()))?;
+        let permit = {
+            let _waiting = GaugeGuard::new(m::SCALE_WAITING);
+            self.inner
+                .scale_permits
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|e| ServiceError::Internal(e.to_string()))?
+        };
         let limits = self.inner.cfg.limits;
         let encode = self.inner.cfg.encode;
         let src_format = orig.format;
         let started = std::time::Instant::now();
         let out = tokio::task::spawn_blocking(move || {
             let _permit = permit;
+            let _running = GaugeGuard::new(m::SCALE_RUNNING);
             imaging::render(&src, src_format, &spec, format, &limits, &encode)
         })
         .await
-        .map_err(|e| ServiceError::Internal(format!("render task failed: {e}")))?
-        .map_err(|e| {
+        .map_err(|e| ServiceError::Internal(format!("render task failed: {e}")))?;
+        let outcome = match &out {
+            Ok(_) => "ok",
+            Err(e) if e.is_limit() => "limit",
+            Err(_) => "error",
+        };
+        histogram!(m::SCALE_DURATION, "format" => format.extension(), "outcome" => outcome)
+            .record(started.elapsed().as_secs_f64());
+        let out = out.map_err(|e| {
             if e.is_limit() {
                 ServiceError::TooLarge(e)
             } else {
@@ -444,6 +562,22 @@ impl ImageService {
             })
             .await?;
         Ok(())
+    }
+}
+
+/// Increments a gauge now and decrements it when dropped, even on error or panic.
+struct GaugeGuard(&'static str);
+
+impl GaugeGuard {
+    fn new(name: &'static str) -> Self {
+        gauge!(name).increment(1.0);
+        Self(name)
+    }
+}
+
+impl Drop for GaugeGuard {
+    fn drop(&mut self) {
+        gauge!(self.0).decrement(1.0);
     }
 }
 

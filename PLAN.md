@@ -221,9 +221,13 @@ CREATE TABLE variants (
 | `RADIANT_MAX_ANIMATION_PIXELS`   | 400 MP    | frames × w × h, decoded and output        |
 | `RADIANT_SCALE_CONCURRENCY`      | #cpus     | semaphore                                 |
 | `RADIANT_SCALE_TIMEOUT_SECS`     | 30        | 503 on timeout                            |
-| `RADIANT_ALLOWED_SIZES`          | unset     | optional allowlist of specs (anything else returns 404) |
+| `RADIANT_ALLOWED_SIZES`          | unset     | optional allowlist of specs (anything else returns 404). **Not built yet** |
+| `RADIANT_MAX_CONCURRENT_UPLOADS` | 8         | further uploads wait (bounds upload memory) |
+| `RADIANT_REQUEST_TIMEOUT_SECS`   | 120       | 408 for the whole request                 |
+| `RADIANT_SHUTDOWN_DRAIN_SECS`    | 10        | wait on shutdown for in-progress renders to be stored |
 
-Decoding enforces `image::Limits` as well, which protects against decompression bombs.
+Decoding enforces `image::Limits` as well, which protects against decompression bombs. Its allocation
+cap is scaled to `RADIANT_MAX_INPUT_PIXELS` so it can't reject images our own limits allow.
 
 ## Configuration
 
@@ -241,14 +245,20 @@ and each can also be passed as a CLI flag.
 
 ## Metrics (Prometheus)
 
-- `radiant_http_requests_total{route,status}`, `radiant_http_request_duration_seconds{route}`
-- `radiant_image_served_total{source="original|variant_cached|variant_generated"}`
-- `radiant_scale_duration_seconds{outcome}`, `radiant_scale_in_flight`,
-  `radiant_scale_waiting`, `radiant_singleflight_coalesced_total`
-- `radiant_backend_op_duration_seconds{backend,op,outcome}`
-- `radiant_uploads_total{outcome}`, `radiant_upload_bytes`
-- `radiant_limit_rejections_total{limit}`
-- `radiant_catalog_recoveries_total{kind}` (catalog rows rebuilt from the backend)
+`GET /metrics` (on by default, `RADIANT_METRICS=false` turns it off). Names are defined in
+`src/telemetry.rs`.
+
+- `radiant_http_requests_total{route,method,status}`, `radiant_http_request_duration_seconds{route}`.
+  `route` is the route pattern, or `unmatched`, so the number of label values stays small.
+- `radiant_images_served_total{source="original|variant_stored|variant_rendered|not_modified"}`
+- `radiant_scale_duration_seconds{format,outcome="ok|limit|error"}`, `radiant_scale_running`,
+  `radiant_scale_waiting`, `radiant_scale_timeouts_total`, `radiant_singleflight_coalesced_total`
+- `radiant_variant_store_failures_total`
+- `radiant_backend_op_duration_seconds{backend,op="get|put|find_original",outcome="ok|not_found|error"}`
+- `radiant_uploads_total{outcome="created|duplicate|rejected|error"}`, `radiant_upload_size_bytes`
+- `radiant_limit_rejections_total{limit="input_pixels|output_dimension|frames|animation_pixels|decode_memory|upload_bytes"}`
+- `radiant_catalog_repairs_total{kind="original_recovered|variant_blob_missing|original_blob_missing"}`
+- `radiant_build_info{version}`
 
 ## Testing strategy
 
@@ -265,7 +275,7 @@ and each can also be passed as a CLI flag.
 
 ## Milestones
 
-Status: M0–M5 are done. M6 (hardening, metrics) is next.
+Status: M0–M6 are done. M7 (S3 backend) is next.
 
 - **M0 Skeleton**: `cargo init`, axum app, config, tracing, `/healthz`, CI (fmt, clippy, test),
   Nix packaging, Dockerfile.

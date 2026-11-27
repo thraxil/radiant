@@ -74,6 +74,8 @@ pub enum ImagingError {
     InputTooLarge { width: u32, height: u32 },
     #[error("output would be {width}x{height}, over the output dimension limit")]
     OutputTooLarge { width: u32, height: u32 },
+    #[error("image needs more memory to decode than allowed")]
+    DecodeMemoryLimit,
     #[error("animation has more than {limit} frames")]
     TooManyFrames { limit: u32 },
     #[error("animation is over the {limit} pixel limit (frames x width x height)")]
@@ -117,7 +119,23 @@ fn image_format(f: Format) -> image::ImageFormat {
 }
 
 fn decode_error(e: ImageError) -> ImagingError {
-    ImagingError::Decode(e.to_string())
+    match e {
+        ImageError::Limits(_) => ImagingError::DecodeMemoryLimit,
+        e => ImagingError::Decode(e.to_string()),
+    }
+}
+
+/// image's allocation cap. Its 512 MiB default could reject images under our own pixel limit
+/// (a 16-bit RGBA image needs 8 bytes per pixel), so scale it with that limit. It stays as a
+/// backstop against anything our checks miss.
+fn decoder_limits(limits: &Limits) -> image::Limits {
+    let mut l = image::Limits::default();
+    let needed = limits
+        .max_input_pixels
+        .saturating_mul(8)
+        .saturating_add(64 << 20);
+    l.max_alloc = Some(l.max_alloc.unwrap_or(0).max(needed));
+    l
 }
 
 fn encode_error(e: impl std::fmt::Display) -> ImagingError {
@@ -127,13 +145,19 @@ fn encode_error(e: impl std::fmt::Display) -> ImagingError {
 impl ImagingError {
     /// True when the request or upload is over a configured limit, as opposed to a broken image.
     pub fn is_limit(&self) -> bool {
-        matches!(
-            self,
-            ImagingError::InputTooLarge { .. }
-                | ImagingError::OutputTooLarge { .. }
-                | ImagingError::TooManyFrames { .. }
-                | ImagingError::AnimationTooLarge { .. }
-        )
+        self.limit_name().is_some()
+    }
+
+    /// Which limit was hit, as a metrics label.
+    pub fn limit_name(&self) -> Option<&'static str> {
+        match self {
+            ImagingError::InputTooLarge { .. } => Some("input_pixels"),
+            ImagingError::OutputTooLarge { .. } => Some("output_dimension"),
+            ImagingError::TooManyFrames { .. } => Some("frames"),
+            ImagingError::AnimationTooLarge { .. } => Some("animation_pixels"),
+            ImagingError::DecodeMemoryLimit => Some("decode_memory"),
+            _ => None,
+        }
     }
 }
 
@@ -151,9 +175,8 @@ fn read_header<'a>(
     limits: &Limits,
 ) -> Result<Header<impl ImageDecoder + 'a>, ImagingError> {
     let mut reader = ImageReader::with_format(Cursor::new(bytes), image_format(format));
-    // Pixel limits are enforced below. image's own allocation limit (default 512 MiB) stays as
-    // a backstop.
-    reader.limits(image::Limits::default());
+    // Pixel limits are enforced below. image's allocation cap is a backstop.
+    reader.limits(decoder_limits(limits));
     let mut decoder = reader.into_decoder().map_err(decode_error)?;
     let (width, height) = decoder.dimensions();
     if u64::from(width) * u64::from(height) > limits.max_input_pixels {

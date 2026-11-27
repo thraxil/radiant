@@ -385,3 +385,52 @@ fn etag_matching() {
     assert!(!etag_matches(Some("\"abcd\""), "abc"));
     assert!(!etag_matches(Some(""), "abc"));
 }
+
+#[tokio::test]
+async fn drain_waits_for_background_renders() {
+    let cfg = ServiceConfig {
+        scale_timeout: Duration::ZERO,
+        ..ServiceConfig::default()
+    };
+    let svc = service_with(Arc::new(ObjectBlobStore::memory()), cfg).await;
+    let up = svc.upload(jpeg(800, 600)).await.unwrap();
+    // The request gives up at once, but the render carries on in the background.
+    assert!(matches!(
+        svc.get(&req(up.hash, "400w", Format::Webp), None).await,
+        Err(ServiceError::Timeout)
+    ));
+    assert!(svc.drain(Duration::from_secs(10)).await);
+    let spec: SizeSpec = "400w".parse().unwrap();
+    assert!(
+        svc.catalog()
+            .get_variant(&up.hash, &spec, Format::Webp)
+            .await
+            .unwrap()
+            .is_some(),
+        "drain returned before the render was stored"
+    );
+    assert!(svc.drain(Duration::ZERO).await, "nothing left in flight");
+}
+
+#[tokio::test]
+async fn render_job_reuses_a_variant_stored_after_the_callers_catalog_check() {
+    // Simulates the race: the caller missed the catalog, but another render stored the variant
+    // before this render job started.
+    let store = counting();
+    let svc = service_with(store.clone(), ServiceConfig::default()).await;
+    let up = svc.upload(jpeg(64, 64)).await.unwrap();
+    let r = req(up.hash, "16s", Format::Png);
+    let (first, _, etag) = image(svc.get(&r, None).await.unwrap());
+    wait_for_variant(&svc, &up.hash, "16s", Format::Png).await;
+    assert_eq!(store.variant_puts.load(Ordering::SeqCst), 1);
+
+    let orig = svc.catalog().get_original(&up.hash).await.unwrap().unwrap();
+    let rendered = svc.render_shared(&r, orig, None).await.unwrap();
+    assert_eq!(rendered.etag, etag);
+    assert_eq!(rendered.bytes, first);
+    assert_eq!(
+        store.variant_puts.load(Ordering::SeqCst),
+        1,
+        "re-rendered instead of reusing"
+    );
+}

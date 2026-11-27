@@ -25,7 +25,19 @@ async fn app_with(key: Option<&str>, max_upload_bytes: usize) -> Router {
         service,
         upload_key: key.map(Arc::from),
         max_upload_bytes,
+        upload_permits: Arc::new(tokio::sync::Semaphore::new(4)),
+        request_timeout: std::time::Duration::from_secs(60),
+        metrics: Some(test_metrics()),
     })
+}
+
+/// The metrics recorder is global, so install it once for every test.
+fn test_metrics() -> metrics_exporter_prometheus::PrometheusHandle {
+    static HANDLE: std::sync::OnceLock<metrics_exporter_prometheus::PrometheusHandle> =
+        std::sync::OnceLock::new();
+    HANDLE
+        .get_or_init(|| crate::telemetry::install().expect("install metrics recorder"))
+        .clone()
 }
 
 async fn app() -> Router {
@@ -286,4 +298,46 @@ async fn percent_encoded_filename_survives_redirect() {
         res.headers()[header::LOCATION],
         format!("/image/{H}/100w/my%20photo.png").as_str()
     );
+}
+
+#[tokio::test]
+async fn metrics_endpoint() {
+    let app = app().await;
+    let v = upload(&app, &png(20, 20)).await;
+    let hash = v["hash"].as_str().unwrap();
+    assert_eq!(
+        get(&app, &format!("/image/{hash}/10s/a.webp"))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        get(&app, &format!("/image/{hash}/full/a.png"))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let _ = get(&app, &format!("/image/{hash}/9000s/a.png")).await;
+    let _ = get(&app, "/no/such/route").await;
+
+    let res = get(&app, "/metrics").await;
+    assert_eq!(res.status(), StatusCode::OK);
+    let text = String::from_utf8(body(res).await).unwrap();
+    // The recorder is shared by every test in this process, so check only that series exist,
+    // not exact counts.
+    for needle in [
+        "radiant_build_info{",
+        r#"radiant_http_requests_total{route="/image/{hash}/{size}/{filename}",method="GET",status="200"}"#,
+        r#"route="unmatched""#,
+        r#"radiant_http_request_duration_seconds_bucket{route="/",le="#,
+        r#"radiant_images_served_total{source="original"}"#,
+        r#"radiant_images_served_total{source="variant_rendered"}"#,
+        r#"radiant_uploads_total{outcome="created"}"#,
+        r#"radiant_limit_rejections_total{limit="output_dimension"}"#,
+        r#"radiant_scale_duration_seconds_bucket{format="webp",outcome="ok",le="#,
+        "radiant_scale_running",
+        "radiant_upload_size_bytes_bucket",
+    ] {
+        assert!(text.contains(needle), "missing {needle} in:\n{text}");
+    }
 }

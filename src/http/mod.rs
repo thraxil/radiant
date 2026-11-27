@@ -4,15 +4,21 @@ mod image;
 mod upload;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{StatusCode, header};
+use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use metrics_exporter_prometheus::PrometheusHandle;
+use tokio::sync::Semaphore;
+use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::service::{ImageService, ServiceError};
+use crate::telemetry;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -20,10 +26,17 @@ pub struct AppState {
     /// If set, uploads must send it as the `key` form field.
     pub upload_key: Option<Arc<str>>,
     pub max_upload_bytes: usize,
+    /// Caps concurrent uploads, each of which holds up to `max_upload_bytes` in memory.
+    /// Extra uploads wait their turn.
+    pub upload_permits: Arc<Semaphore>,
+    /// Whole-request timeout (408).
+    pub request_timeout: Duration,
+    /// Serves `/metrics` when set.
+    pub metrics: Option<PrometheusHandle>,
 }
 
 pub fn router(state: AppState) -> Router {
-    Router::new()
+    let mut router = Router::new()
         .route(
             "/",
             get(upload::form)
@@ -33,9 +46,29 @@ pub fn router(state: AppState) -> Router {
         .route("/image/{hash}/{size}/{filename}", get(image::serve))
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
-        .route("/favicon.ico", get(favicon))
+        .route("/favicon.ico", get(favicon));
+    if state.metrics.is_some() {
+        router = router.route("/metrics", get(metrics));
+    }
+    router
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            state.request_timeout,
+        ))
+        .layer(middleware::from_fn(telemetry::track_http))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+async fn metrics(State(state): State<AppState>) -> Response {
+    match &state.metrics {
+        Some(handle) => (
+            [(header::CONTENT_TYPE, "text/plain; version=0.0.4")],
+            handle.render(),
+        )
+            .into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 async fn healthz() -> &'static str {

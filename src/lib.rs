@@ -8,3 +8,4 @@ pub mod request;
 pub mod service;
 pub mod spec;
 pub mod store;
+pub mod telemetry;
