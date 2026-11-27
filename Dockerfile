@@ -11,7 +11,10 @@ RUN mkdir src && echo 'fn main() {}' > src/main.rs && touch src/lib.rs \
     && rm -rf src
 COPY src ./src
 COPY migrations ./migrations
-RUN touch src/main.rs src/lib.rs && cargo build --release --locked
+# Release tag (e.g. r12) baked into the binary: `radiant --version` and radiant_build_info.
+# Declared after the dependency build so changing it doesn't invalidate that layer.
+ARG RADIANT_RELEASE=""
+RUN touch src/main.rs src/lib.rs && RADIANT_RELEASE="$RADIANT_RELEASE" cargo build --release --locked
 
 FROM debian:trixie-slim
 RUN apt-get update \

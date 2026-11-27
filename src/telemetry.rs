@@ -48,7 +48,7 @@ pub fn install() -> Result<PrometheusHandle, metrics_exporter_prometheus::BuildE
         .set_buckets_for_metric(Matcher::Full(UPLOAD_SIZE.into()), SIZE_BUCKETS)?
         .install_recorder()?;
     describe();
-    gauge!(BUILD_INFO, "version" => env!("CARGO_PKG_VERSION")).set(1.0);
+    gauge!(BUILD_INFO, "version" => crate::version()).set(1.0);
     Ok(handle)
 }
 

@@ -12,7 +12,7 @@ use crate::service::ServiceConfig;
 
 #[derive(Debug, Clone, Parser)]
 #[command(
-    version,
+    version = crate::version(),
     about = "Image scaling and serving, compatible with reticulum"
 )]
 pub struct Config {

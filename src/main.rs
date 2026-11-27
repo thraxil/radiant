@@ -60,6 +60,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(
         backend = store.backend(),
         db = %config.db_path.display(),
+        version = radiant::version(),
         upload_key_required = config.upload_key.is_some(),
         scale_concurrency = service_config.scale_concurrency,
         "starting"

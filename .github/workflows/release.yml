@@ -1,0 +1,61 @@
+name: Release
+
+# Every successful CI run on a push to main becomes a release tagged r<run number>:
+# a Docker image at ghcr.io/<owner>/radiant (tagged r<N>, sha-<short sha> and latest) and a
+# GitHub release at that commit, whose notes give the image digest. Deploys pin a tag, or
+# the digest for an exact image.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    env:
+      TAG: r${{ github.run_number }}
+      SHA: ${{ github.event.workflow_run.head_sha }}
+      IMAGE: ghcr.io/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.SHA }}
+      - name: Short SHA
+        run: echo "SHORT_SHA=${SHA::7}" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Build and push image
+        id: image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          build-args: RADIANT_RELEASE=${{ env.TAG }}
+          tags: |
+            ${{ env.IMAGE }}:${{ env.TAG }}
+            ${{ env.IMAGE }}:sha-${{ env.SHORT_SHA }}
+            ${{ env.IMAGE }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ env.SHA }}
+            org.opencontainers.image.version=${{ env.TAG }}
+          # Shares the cache CI's docker job fills, so only radiant itself is rebuilt.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          notes=$(printf 'Docker image: `%s:%s`\n\nPinned by digest: `%s@%s`\n' "$IMAGE" "$TAG" "$IMAGE" "$DIGEST")
+          gh release create "$TAG" --target "$SHA" --title "$TAG" --notes "$notes" --generate-notes
