@@ -3,7 +3,9 @@
 FROM rust:1-slim-trixie AS build
 WORKDIR /src
 # Build dependencies first so this layer stays cached when only our code changes.
-COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+# rust-toolchain.toml is left out on purpose: it would pull in dev-only components (rust-analyzer
+# etc.). The image's stable toolchain is used instead.
+COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && echo 'fn main() {}' > src/main.rs && touch src/lib.rs \
     && cargo build --release --locked \
     && rm -rf src

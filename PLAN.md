@@ -91,7 +91,10 @@ behaviour from reticulum's current bimg worker:
   matched anywhere in the string (`200h100w` → `100w200h`, `x100sx` → `100s`). The result is then
   checked against the canonical form, which triggers the 301. Strings that don't parse return 404.
 - **Upscaling is allowed** in every mode (bimg didn't allow it, so this is a deliberate change).
-- Zero dimensions return 404. Dimensions above `RADIANT_MAX_OUTPUT_DIMENSION` return 400.
+- Zero dimensions return 404. Output dimensions above `RADIANT_MAX_OUTPUT_DIMENSION` return
+  400. The check uses the *actual* output size, so `100w` on a very tall image can exceed the
+  limit. `full` is exempt, because the input pixel limit already bounds it.
+- All output is 8-bit RGB or RGBA. 16-bit and greyscale sources are converted.
 - EXIF orientation is applied before scaling. Metadata is stripped from the output.
 - Test suite: a table of spec → canonical string → output dimensions for a set of input
   dimensions, derived from the Go code, plus the 301 redirect cases.
