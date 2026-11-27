@@ -10,7 +10,7 @@ use radiant::catalog::Catalog;
 use radiant::config::{Backend, Config, LogFormat};
 use radiant::http::AppState;
 use radiant::service::ImageService;
-use radiant::store::{BlobStore, ObjectBlobStore};
+use radiant::store::{BlobStore, ObjectBlobStore, S3Config};
 use radiant::telemetry::{self, InstrumentedStore};
 
 #[tokio::main]
@@ -30,6 +30,19 @@ async fn main() -> anyhow::Result<()> {
         Backend::Fs => Arc::new(
             ObjectBlobStore::local(&config.fs_root)
                 .with_context(|| format!("opening fs backend at {}", config.fs_root.display()))?,
+        ),
+        Backend::S3 => Arc::new(
+            ObjectBlobStore::s3(&S3Config {
+                bucket: config
+                    .s3_bucket
+                    .clone()
+                    .context("RADIANT_S3_BUCKET is required for the s3 backend")?,
+                prefix: config.s3_prefix.clone(),
+                region: config.s3_region.clone(),
+                endpoint: config.s3_endpoint.clone(),
+                timeout: Duration::from_secs(config.backend_timeout_secs),
+            })
+            .context("configuring s3 backend")?,
         ),
     };
     let store: Arc<dyn BlobStore> = Arc::new(InstrumentedStore::new(store));

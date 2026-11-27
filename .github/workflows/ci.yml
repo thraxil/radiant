@@ -18,6 +18,8 @@ jobs:
         run: nix develop --command cargo clippy --all-targets --locked -- -D warnings
       - name: test
         run: nix develop --command cargo test --locked
+      - name: test against S3 (versitygw)
+        run: nix develop --command scripts/test-s3.sh
 
   docker:
     runs-on: ubuntu-latest

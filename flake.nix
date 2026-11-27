@@ -27,6 +27,8 @@
             pkgs.cargo-nextest
             pkgs.cargo-edit
             pkgs.pkg-config
+            # Local S3-compatible server for scripts/test-s3.sh
+            pkgs.versitygw
           ];
 
           RUST_BACKTRACE = "1";

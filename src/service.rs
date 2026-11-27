@@ -147,6 +147,10 @@ impl ImageService {
         &self.inner.catalog
     }
 
+    pub fn store(&self) -> &dyn BlobStore {
+        self.inner.store.as_ref()
+    }
+
     pub fn limits(&self) -> &Limits {
         &self.inner.cfg.limits
     }

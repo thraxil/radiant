@@ -36,6 +36,26 @@ pub struct Config {
     #[arg(long, env = "RADIANT_FS_ROOT", default_value = "data/blobs")]
     pub fs_root: PathBuf,
 
+    /// Bucket for the `s3` backend. Credentials come from the usual `AWS_*` variables.
+    #[arg(long, env = "RADIANT_S3_BUCKET", required_if_eq("backend", "s3"))]
+    pub s3_bucket: Option<String>,
+
+    /// Key prefix inside the bucket.
+    #[arg(long, env = "RADIANT_S3_PREFIX", default_value = "")]
+    pub s3_prefix: String,
+
+    /// Region. Defaults to `AWS_REGION`/`AWS_DEFAULT_REGION`.
+    #[arg(long, env = "RADIANT_S3_REGION")]
+    pub s3_region: Option<String>,
+
+    /// Endpoint for S3-compatible stores, e.g. `http://localhost:9000` for MinIO.
+    #[arg(long, env = "RADIANT_S3_ENDPOINT")]
+    pub s3_endpoint: Option<String>,
+
+    /// Per-request timeout for the storage backend, in seconds.
+    #[arg(long, env = "RADIANT_BACKEND_TIMEOUT_SECS", default_value_t = 30)]
+    pub backend_timeout_secs: u64,
+
     /// If set, uploads must include it as the `key` form field.
     #[arg(long, env = "RADIANT_UPLOAD_KEY", hide_env_values = true)]
     pub upload_key: Option<String>,
@@ -107,6 +127,8 @@ pub enum LogFormat {
 pub enum Backend {
     /// Local filesystem.
     Fs,
+    /// Amazon S3 or an S3-compatible store.
+    S3,
 }
 
 impl Config {

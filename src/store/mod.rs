@@ -18,7 +18,7 @@ use std::fmt;
 use async_trait::async_trait;
 use bytes::Bytes;
 
-pub use object::ObjectBlobStore;
+pub use object::{ObjectBlobStore, S3Config};
 
 use crate::format::Format;
 use crate::hash::Sha1Hash;
@@ -70,7 +70,12 @@ pub trait BlobStore: Send + Sync + 'static {
     /// be rebuilt. Returns the blob's ref and bytes, which must hash to `hash`. The caller
     /// sniffs the format.
     async fn find_original(&self, hash: &Sha1Hash) -> Result<Option<(BlobRef, Bytes)>, StoreError>;
+
+    /// Checks the backend is reachable and the credentials work, for `/readyz`.
+    async fn ping(&self) -> Result<(), StoreError>;
 }
 
 #[cfg(test)]
 pub(crate) mod conformance;
+#[cfg(test)]
+pub(crate) use object::tests::test_s3;

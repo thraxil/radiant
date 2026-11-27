@@ -76,13 +76,19 @@ async fn healthz() -> &'static str {
 }
 
 async fn readyz(State(state): State<AppState>) -> Response {
-    match state.service.catalog().ping().await {
-        Ok(()) => "ok".into_response(),
-        Err(e) => {
-            tracing::error!(error = %e, "readiness check failed");
-            (StatusCode::SERVICE_UNAVAILABLE, "catalog unavailable").into_response()
-        }
+    if let Err(e) = state.service.catalog().ping().await {
+        tracing::error!(error = %e, "readiness check failed: catalog");
+        return (StatusCode::SERVICE_UNAVAILABLE, "catalog unavailable").into_response();
     }
+    if let Err(e) = state.service.store().ping().await {
+        tracing::error!(error = %e, "readiness check failed: storage backend");
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "storage backend unavailable",
+        )
+            .into_response();
+    }
+    "ok".into_response()
 }
 
 /// Reticulum returns an empty 200 here, and so do we.

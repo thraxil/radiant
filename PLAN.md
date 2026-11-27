@@ -237,8 +237,10 @@ and each can also be passed as a CLI flag.
 - `RADIANT_LISTEN` (default `0.0.0.0:8080`), `RADIANT_UPLOAD_KEY`, `RADIANT_DB_PATH`
 - `RADIANT_BACKEND` = `fs` | `s3` | `cask`
   - fs: `RADIANT_FS_ROOT`
-  - s3: `RADIANT_S3_BUCKET`, `RADIANT_S3_PREFIX`, `RADIANT_S3_REGION`, `RADIANT_S3_ENDPOINT`,
-    plus the standard AWS credential env vars
+  - s3: `RADIANT_S3_BUCKET`, `RADIANT_S3_PREFIX`, `RADIANT_S3_REGION`, `RADIANT_S3_ENDPOINT`
+    (for S3-compatible stores; `http://` allowed; path-style requests), plus the standard
+    `AWS_*` credential variables. `RADIANT_BACKEND_TIMEOUT_SECS` (30) is the per-request timeout.
+    Objects get a `Content-Type`, so the bucket can be browsed directly.
   - cask: `RADIANT_CASK_URL` (one node URL or a comma-separated list with failover),
     `RADIANT_CASK_TIMEOUT_SECS`
 - `RADIANT_JPEG_QUALITY`, `RADIANT_LOG_FORMAT` (`json` | `pretty`)
@@ -267,7 +269,9 @@ and each can also be passed as a CLI flag.
   dimensions, frame counts and delays, and determinism (encoding twice gives the same bytes).
 - `BlobStore` conformance suite run against every backend:
   - in-memory and fs: always.
-  - S3: against MinIO (from the Nix shell).
+  - S3: `scripts/test-s3.sh` starts versitygw (an S3 gateway over a temp directory, from the
+    Nix shell) and runs the S3-gated tests. CI runs it too. MinIO was the plan, but it has been
+    removed from nixpkgs (abandoned upstream).
   - Cask: against a real cask node, which builds from its flake.
 - HTTP tests through `axum` + `tower::ServiceExt::oneshot` against an in-memory backend.
 - Compatibility check (optional, later): a script that sends the same URLs to reticulum and
@@ -275,7 +279,7 @@ and each can also be passed as a CLI flag.
 
 ## Milestones
 
-Status: M0–M6 are done. M7 (S3 backend) is next.
+Status: M0–M7 are done. M8 (Cask backend) is next.
 
 - **M0 Skeleton**: `cargo init`, axum app, config, tracing, `/healthz`, CI (fmt, clippy, test),
   Nix packaging, Dockerfile.
@@ -288,7 +292,7 @@ Status: M0–M6 are done. M7 (S3 backend) is next.
   flow, single-flight, ETag/304, cache headers.
 - **M5 Upload**: multipart, key check, sniffing, idempotency, `size_hints`, upload form.
 - **M6 Hardening**: all limits, timeouts, metrics, graceful shutdown.
-- **M7 S3 backend**: `object_store`, MinIO integration tests.
+- **M7 S3 backend**: `object_store`, S3 integration tests (versitygw).
 - **M8 Cask backend**: reqwest client, multi-node failover, integration tests against real cask.
 - **M9 Migration tool**: `radiant import` that walks a reticulum upload directory
   (`aa/bb/…/full.<ext>`) and pushes originals into the configured backend. Existing scaled
@@ -315,5 +319,10 @@ Status: M0–M6 are done. M7 (S3 backend) is next.
 - `RADIANT_MAX_ANIMATION_PIXELS` (400 MP) bounds memory per animated render at about 1.6 GB
   worst case (4 bytes per output pixel). Lower it on small machines, or lower
   `RADIANT_SCALE_CONCURRENCY`.
+- `/readyz` checks the catalog and the backend. The backend check LISTs a prefix that never
+  exists, because S3 answers a HEAD in a missing bucket with a bare 404 that looks like
+  "no such key".
+- object_store's `aws` feature brings in aws-lc-rs, a C build. It works with only a C
+  compiler, but it makes a clean Docker build take about 5 minutes.
 - Single-flight: the first request for a missing variant spawns the render. Later requests
   wait on it. The render is stored even if every waiter times out or disconnects.

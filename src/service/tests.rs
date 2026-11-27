@@ -29,6 +29,9 @@ impl BlobStore for CountingStore {
     async fn find_original(&self, hash: &Sha1Hash) -> Result<Option<(BlobRef, Bytes)>, StoreError> {
         self.inner.find_original(hash).await
     }
+    async fn ping(&self) -> Result<(), StoreError> {
+        self.inner.ping().await
+    }
 }
 
 fn counting() -> Arc<CountingStore> {
@@ -433,4 +436,53 @@ async fn render_job_reuses_a_variant_stored_after_the_callers_catalog_check() {
         1,
         "re-rendered instead of reusing"
     );
+}
+
+/// The whole flow against real S3 (MinIO via `scripts/test-s3.sh`). Skipped otherwise.
+#[tokio::test]
+async fn end_to_end_on_s3() {
+    let Some(s3) = crate::store::test_s3() else {
+        eprintln!("skipping: RADIANT_TEST_S3_BUCKET not set (run scripts/test-s3.sh)");
+        return;
+    };
+    let store: Arc<dyn BlobStore> = Arc::new(s3);
+    let svc = service_with(store.clone(), ServiceConfig::default()).await;
+    let bytes = jpeg(120, 80);
+    let up = svc.upload(bytes.clone()).await.unwrap();
+
+    let (orig, _, _) = image(
+        svc.get(&req(up.hash, "full", Format::Jpeg), None)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(orig, bytes);
+    let (v, _, _) = image(
+        svc.get(&req(up.hash, "40s", Format::Webp), None)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(imaging::sniff(&v), Some(Format::Webp));
+    // A full-size conversion sits next to the original. Recovery must still find the original.
+    image(
+        svc.get(&req(up.hash, "full", Format::Png), None)
+            .await
+            .unwrap(),
+    );
+    wait_for_variant(&svc, &up.hash, "full", Format::Png).await;
+
+    // A fresh catalog rebuilds itself from the bucket.
+    let svc2 = service_with(store, ServiceConfig::default()).await;
+    let (again, _, _) = image(
+        svc2.get(&req(up.hash, "full", Format::Jpeg), None)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(again, bytes);
+    let row = svc2
+        .catalog()
+        .get_original(&up.hash)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((row.format, row.width, row.height), (Format::Jpeg, 120, 80));
 }

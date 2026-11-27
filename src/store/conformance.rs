@@ -7,6 +7,8 @@ use crate::format::Format;
 use crate::hash::Sha1Hash;
 
 pub(crate) async fn run(store: &dyn BlobStore) {
+    store.ping().await.expect("ping a healthy store");
+
     let original = Bytes::from_static(b"original bytes");
     let hash = Sha1Hash::digest(&original);
 

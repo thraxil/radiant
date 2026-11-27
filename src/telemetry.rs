@@ -189,4 +189,9 @@ impl BlobStore for InstrumentedStore {
         self.record("find_original", outcome(&res), start);
         res
     }
+
+    async fn ping(&self) -> Result<(), StoreError> {
+        // Not timed: it runs on every readiness probe and isn't real traffic.
+        self.inner.ping().await
+    }
 }
