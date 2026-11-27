@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1
 
-FROM rust:1-slim-trixie AS build
+# Base images are pinned to an exact version and its multi-arch index digest. Dependabot
+# (docker ecosystem) bumps both the tag and the digest.
+FROM rust:1.100.0-slim-trixie@sha256:3b199fd6db7d709274df56565b8f4003f9e30d7bfcff9d53148c86053b7855e2 AS build
 WORKDIR /src
 # Build dependencies first so this layer stays cached when only our code changes.
 # rust-toolchain.toml is left out on purpose: it would pull in dev-only components (rust-analyzer
@@ -16,7 +18,7 @@ COPY migrations ./migrations
 ARG RADIANT_RELEASE=""
 RUN touch src/main.rs src/lib.rs && RADIANT_RELEASE="$RADIANT_RELEASE" cargo build --release --locked
 
-FROM debian:trixie-slim
+FROM debian:13.8-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
