@@ -7,11 +7,11 @@ on:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: DeterminateSystems/determinate-nix-action@v3
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@v7.0.1
+      - uses: DeterminateSystems/determinate-nix-action@v3.24.3
+      - uses: Swatinem/rust-cache@v2.9.3
       - name: fmt
         run: nix develop --command cargo fmt --check
       - name: clippy
@@ -24,11 +24,14 @@ jobs:
         run: nix develop --command scripts/test-cask.sh
 
   docker:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/build-push-action@v7
+      - uses: actions/checkout@v7.0.1
+      - uses: docker/setup-buildx-action@v4.4.1
+        with:
+          # Pinned: otherwise it uses whatever buildx the runner image ships.
+          version: v0.39.1
+      - uses: docker/build-push-action@v7.4.0
         with:
           context: .
           push: false
