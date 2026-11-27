@@ -404,11 +404,12 @@ impl ImageService {
         })
         .await
         .map_err(|e| ServiceError::Internal(format!("render task failed: {e}")))?
-        .map_err(|e| match e {
-            ImagingError::OutputTooLarge { .. } | ImagingError::InputTooLarge { .. } => {
+        .map_err(|e| {
+            if e.is_limit() {
                 ServiceError::TooLarge(e)
+            } else {
+                ServiceError::Render(e)
             }
-            e => ServiceError::Render(e),
         })?;
         tracing::debug!(%hash, %spec, %format, bytes = out.len(), elapsed = ?started.elapsed(), "rendered variant");
         let etag = Sha1Hash::digest(&out).to_string();

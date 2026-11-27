@@ -106,11 +106,14 @@ behaviour from reticulum's current bimg worker:
 | JPEG       | ✓      | ✓      | —                     | `image` (zune-jpeg decoder)               |
 | PNG / APNG | ✓      | ✓      | ✓ (decode + encode)   | `image` decode; `png` for APNG encode     |
 | GIF        | ✓      | ✓      | ✓                     | `image` / `gif`                           |
-| WebP       | ✓      | ✓      | ✓                     | `image` decode; `webp` / `webp-animation` (libwebp) encode (lossy + animated) |
+| WebP       | ✓      | ✓      | ✓                     | `image` decodes stills; libwebp (`libwebp-sys`, own wrapper) decodes animations and encodes everything (lossy) |
 | AVIF       | later  | later  | —                     | dav1d decode, `ravif` encode — **deferred** (native deps, slow encode) |
 
 Resizing uses `fast_image_resize` (SIMD, Lanczos3). For animations, every frame is resized with
-the same geometry, and the original frame delays and loop count are kept.
+the same geometry, and the original frame delays and loop count are kept. Frames are decoded
+already composited, then streamed through resize one at a time, so only the resized frames are
+held. Each frame is written as a full canvas that replaces the previous one. That's larger than
+delta frames, but transparency always comes out right.
 
 Conversion rules:
 - Animated → static format (e.g. GIF → JPEG): the first frame is used.
@@ -262,7 +265,7 @@ and each can also be passed as a CLI flag.
 
 ## Milestones
 
-Status: M0, M1, M2, M4 and M5 are done. M3 (animation) is next.
+Status: M0–M5 are done. M6 (hardening, metrics) is next.
 
 - **M0 Skeleton**: `cargo init`, axum app, config, tracing, `/healthz`, CI (fmt, clippy, test),
   Nix packaging, Dockerfile.
@@ -295,5 +298,12 @@ Status: M0, M1, M2, M4 and M5 are done. M3 (animation) is next.
   whole image, as in reticulum. A truncated file is accepted and fails later when rendered (500).
 - Catalog recovery for fs/S3 picks the `full.*` blob whose bytes match the hash, because a
   full-size conversion (e.g. `full.jpg` next to the original `full.png`) shares the prefix.
+- Animated WebP goes through libwebp, not image-webp or the `webp` crate. image-webp
+  composited some animations wrongly (a transparent frame kept showing the previous one), and
+  the `webp` crate's encoder ended animations with timestamp 0, which broke the last frame's
+  duration.
+- `RADIANT_MAX_ANIMATION_PIXELS` (400 MP) bounds memory per animated render at about 1.6 GB
+  worst case (4 bytes per output pixel). Lower it on small machines, or lower
+  `RADIANT_SCALE_CONCURRENCY`.
 - Single-flight: the first request for a missing variant spawns the render. Later requests
   wait on it. The render is stored even if every waiter times out or disconnects.

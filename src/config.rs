@@ -52,6 +52,19 @@ pub struct Config {
     #[arg(long, env = "RADIANT_MAX_OUTPUT_DIMENSION", default_value_t = 4096)]
     pub max_output_dimension: u32,
 
+    /// Maximum number of frames in an animation.
+    #[arg(long, env = "RADIANT_MAX_FRAMES", default_value_t = 500)]
+    pub max_frames: u32,
+
+    /// Maximum frames × width × height of an animation, for both the source and the output.
+    /// Bounds memory per render at about 4 bytes per pixel.
+    #[arg(
+        long,
+        env = "RADIANT_MAX_ANIMATION_PIXELS",
+        default_value_t = 400_000_000
+    )]
+    pub max_animation_pixels: u64,
+
     /// Maximum concurrent scaling jobs. Defaults to the number of CPUs.
     #[arg(long, env = "RADIANT_SCALE_CONCURRENCY")]
     pub scale_concurrency: Option<usize>,
@@ -86,6 +99,8 @@ impl Config {
             limits: Limits {
                 max_input_pixels: self.max_input_pixels,
                 max_output_dimension: self.max_output_dimension,
+                max_frames: self.max_frames,
+                max_animation_pixels: self.max_animation_pixels,
             },
             encode: EncodeSettings {
                 jpeg_quality: self.jpeg_quality,

@@ -7,10 +7,12 @@
 //!   after EXIF orientation is applied.
 //! * [`render`] decodes, orients, resizes and encodes a variant.
 //!
-//! Static images only for now. Animated inputs are rendered from their first frame
-//! (animation support is milestone M3).
+//! Animated GIF, APNG and WebP stay animated when the output format can animate (GIF, PNG,
+//! WebP). Converting an animation to JPEG uses its first frame.
 
+mod animation;
 mod encode;
+mod libwebp;
 mod resize;
 
 use std::io::Cursor;
@@ -27,6 +29,11 @@ pub struct Limits {
     pub max_input_pixels: u64,
     /// Maximum width *and* height of a rendered output.
     pub max_output_dimension: u32,
+    /// Maximum number of frames in an animation.
+    pub max_frames: u32,
+    /// Maximum `frames * width * height`, applied to both the decoded source and the output.
+    /// This bounds decoding CPU and the memory held for resized frames (4 bytes per pixel).
+    pub max_animation_pixels: u64,
 }
 
 impl Default for Limits {
@@ -34,6 +41,8 @@ impl Default for Limits {
         Self {
             max_input_pixels: 100_000_000,
             max_output_dimension: 4096,
+            max_frames: 500,
+            max_animation_pixels: 400_000_000,
         }
     }
 }
@@ -65,6 +74,10 @@ pub enum ImagingError {
     InputTooLarge { width: u32, height: u32 },
     #[error("output would be {width}x{height}, over the output dimension limit")]
     OutputTooLarge { width: u32, height: u32 },
+    #[error("animation has more than {limit} frames")]
+    TooManyFrames { limit: u32 },
+    #[error("animation is over the {limit} pixel limit (frames x width x height)")]
+    AnimationTooLarge { limit: u64 },
     #[error("could not decode image: {0}")]
     Decode(String),
     #[error("could not resize image: {0}")]
@@ -105,6 +118,23 @@ fn image_format(f: Format) -> image::ImageFormat {
 
 fn decode_error(e: ImageError) -> ImagingError {
     ImagingError::Decode(e.to_string())
+}
+
+fn encode_error(e: impl std::fmt::Display) -> ImagingError {
+    ImagingError::Encode(e.to_string())
+}
+
+impl ImagingError {
+    /// True when the request or upload is over a configured limit, as opposed to a broken image.
+    pub fn is_limit(&self) -> bool {
+        matches!(
+            self,
+            ImagingError::InputTooLarge { .. }
+                | ImagingError::OutputTooLarge { .. }
+                | ImagingError::TooManyFrames { .. }
+                | ImagingError::AnimationTooLarge { .. }
+        )
+    }
 }
 
 /// A decoder whose header has been read and checked against the limits, but whose pixels have
@@ -190,6 +220,12 @@ pub fn render(
     limits: &Limits,
     settings: &EncodeSettings,
 ) -> Result<Vec<u8>, ImagingError> {
+    if src_format.supports_animation()
+        && out_format.supports_animation()
+        && let Some(anim) = animation::decode_and_resize(bytes, src_format, spec, limits)?
+    {
+        return animation::encode(anim, out_format, settings);
+    }
     let header = read_header(bytes, src_format, limits)?;
     let (w, h) = planned_output(spec, header.info.width, header.info.height, limits)?;
 
@@ -200,5 +236,7 @@ pub fn render(
     encode::encode(&img, out_format, settings)
 }
 
+#[cfg(test)]
+mod animation_tests;
 #[cfg(test)]
 mod tests;

@@ -3,16 +3,12 @@ use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::PngEncoder;
 use image::{DynamicImage, ExtendedColorType, ImageEncoder, RgbImage};
 
-use super::{EncodeSettings, ImagingError};
+use super::{EncodeSettings, ImagingError, encode_error};
 use crate::format::Format;
 
 /// NeuQuant speed for GIF palette quantisation: 1 is slowest and best, 30 is fastest.
 /// 10 keeps large images fast with little visible difference.
-const GIF_QUANTIZE_SPEED: i32 = 10;
-
-fn encode_error(e: impl std::fmt::Display) -> ImagingError {
-    ImagingError::Encode(e.to_string())
-}
+pub(super) const GIF_QUANTIZE_SPEED: i32 = 10;
 
 /// Encodes a normalised (RGB8 or RGBA8) image. Metadata is never written.
 pub(super) fn encode(
@@ -43,14 +39,13 @@ pub(super) fn encode(
         }
         Format::Webp => {
             let (bytes, color) = raw(img);
-            let encoder = match color {
-                ExtendedColorType::Rgba8 => webp::Encoder::from_rgba(bytes, w, h),
-                _ => webp::Encoder::from_rgb(bytes, w, h),
+            let channels = if color == ExtendedColorType::Rgba8 {
+                4
+            } else {
+                3
             };
-            let mem = encoder
-                .encode_simple(false, settings.webp_quality)
-                .map_err(|e| encode_error(format!("{e:?}")))?;
-            out.extend_from_slice(&mem);
+            out = super::libwebp::encode_still(bytes, w, h, channels, settings.webp_quality)
+                .map_err(encode_error)?;
         }
     }
     Ok(out)
