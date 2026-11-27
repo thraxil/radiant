@@ -1,34 +1,55 @@
 //! HTTP routes.
 
+mod image;
+mod upload;
+
+use std::sync::Arc;
+
 use axum::Router;
-use axum::extract::Path;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use tower_http::trace::TraceLayer;
 
-use crate::request::{ParseOutcome, parse_image_request};
+use crate::service::{ImageService, ServiceError};
 
-pub fn router() -> Router {
-    Router::new()
-        .route("/image/{hash}/{size}/{filename}", get(serve_image))
-        .route("/healthz", get(healthz))
-        .route("/favicon.ico", get(favicon))
+#[derive(Clone)]
+pub struct AppState {
+    pub service: ImageService,
+    /// If set, uploads must send it as the `key` form field.
+    pub upload_key: Option<Arc<str>>,
+    pub max_upload_bytes: usize,
 }
 
-async fn serve_image(Path((hash, size, filename)): Path<(String, String, String)>) -> Response {
-    match parse_image_request(&hash, &size, &filename) {
-        // 301 to match reticulum. axum's `Redirect::permanent` would send 308.
-        ParseOutcome::Redirect(to) => {
-            (StatusCode::MOVED_PERMANENTLY, [(header::LOCATION, to)]).into_response()
-        }
-        ParseOutcome::NotFound(why) => (StatusCode::NOT_FOUND, why).into_response(),
-        // Serving arrives in M4.
-        ParseOutcome::Ok(_req) => StatusCode::NOT_IMPLEMENTED.into_response(),
-    }
+pub fn router(state: AppState) -> Router {
+    Router::new()
+        .route(
+            "/",
+            get(upload::form)
+                .post(upload::upload)
+                .layer(DefaultBodyLimit::max(state.max_upload_bytes)),
+        )
+        .route("/image/{hash}/{size}/{filename}", get(image::serve))
+        .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz))
+        .route("/favicon.ico", get(favicon))
+        .layer(TraceLayer::new_for_http())
+        .with_state(state)
 }
 
 async fn healthz() -> &'static str {
     "ok"
+}
+
+async fn readyz(State(state): State<AppState>) -> Response {
+    match state.service.catalog().ping().await {
+        Ok(()) => "ok".into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "readiness check failed");
+            (StatusCode::SERVICE_UNAVAILABLE, "catalog unavailable").into_response()
+        }
+    }
 }
 
 /// Reticulum returns an empty 200 here, and so do we.
@@ -36,52 +57,30 @@ async fn favicon() -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "image/x-icon")], "")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use axum::body::Body;
-    use axum::http::Request;
-    use tower::ServiceExt;
-
-    const H: &str = "a9993e364706816aba3e25717850c26c9cd0d89d";
-
-    async fn get(uri: &str) -> Response {
-        router()
-            .oneshot(Request::get(uri).body(Body::empty()).unwrap())
-            .await
-            .unwrap()
-    }
-
-    #[tokio::test]
-    async fn healthz_ok() {
-        assert_eq!(get("/healthz").await.status(), StatusCode::OK);
-    }
-
-    #[tokio::test]
-    async fn non_canonical_size_is_permanent_redirect() {
-        let res = get(&format!("/image/{H}/200h100w/image.jpeg")).await;
-        assert_eq!(res.status(), StatusCode::MOVED_PERMANENTLY);
-        assert_eq!(
-            res.headers()[header::LOCATION],
-            format!("/image/{H}/100w200h/image.jpg").as_str()
-        );
-    }
-
-    #[tokio::test]
-    async fn percent_encoded_filename_survives_redirect() {
-        let res = get(&format!("/image/{H}/0100w/my%20photo.png")).await;
-        assert_eq!(res.status(), StatusCode::MOVED_PERMANENTLY);
-        assert_eq!(
-            res.headers()[header::LOCATION],
-            format!("/image/{H}/100w/my%20photo.png").as_str()
-        );
-    }
-
-    #[tokio::test]
-    async fn bad_hash_is_404() {
-        assert_eq!(
-            get("/image/nothex/full/image.jpg").await.status(),
-            StatusCode::NOT_FOUND
-        );
+impl IntoResponse for ServiceError {
+    fn into_response(self) -> Response {
+        let status = match &self {
+            ServiceError::NotFound => StatusCode::NOT_FOUND,
+            ServiceError::TooLarge(_) | ServiceError::BadUpload(_) => StatusCode::BAD_REQUEST,
+            ServiceError::Timeout => StatusCode::SERVICE_UNAVAILABLE,
+            ServiceError::Render(_)
+            | ServiceError::Store(_)
+            | ServiceError::Catalog(_)
+            | ServiceError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        if status.is_server_error() {
+            tracing::error!(error = %self, "request failed");
+            // Internal details go to the log, not the client.
+            let msg = match self {
+                ServiceError::Timeout => "timed out scaling image, try again shortly",
+                _ => "internal error",
+            };
+            (status, msg).into_response()
+        } else {
+            (status, self.to_string()).into_response()
+        }
     }
 }
+
+#[cfg(test)]
+mod tests;

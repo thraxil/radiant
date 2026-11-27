@@ -262,6 +262,8 @@ and each can also be passed as a CLI flag.
 
 ## Milestones
 
+Status: M0, M1, M2, M4 and M5 are done. M3 (animation) is next.
+
 - **M0 Skeleton**: `cargo init`, axum app, config, tracing, `/healthz`, CI (fmt, clippy, test),
   Nix packaging, Dockerfile.
 - **M1 Specs & URLs**: `SizeSpec` + `ImageRequest` parsing, normalisation, and redirects, with
@@ -289,3 +291,9 @@ and each can also be passed as a CLI flag.
 - Default limits as listed above. JPEG quality defaults to 90.
 - Cask: `RADIANT_CASK_URL` takes a list of nodes, with failover.
 - The upload secret field is `key`. The format is sniffed from the bytes.
+- Upload checks the image *header* (format, dimensions, pixel limit) but does not decode the
+  whole image, as in reticulum. A truncated file is accepted and fails later when rendered (500).
+- Catalog recovery for fs/S3 picks the `full.*` blob whose bytes match the hash, because a
+  full-size conversion (e.g. `full.jpg` next to the original `full.png`) shares the prefix.
+- Single-flight: the first request for a missing variant spawns the render. Later requests
+  wait on it. The render is stored even if every waiter times out or disconnects.

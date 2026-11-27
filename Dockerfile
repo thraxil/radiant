@@ -10,15 +10,21 @@ RUN mkdir src && echo 'fn main() {}' > src/main.rs && touch src/lib.rs \
     && cargo build --release --locked \
     && rm -rf src
 COPY src ./src
+COPY migrations ./migrations
 RUN touch src/main.rs src/lib.rs && cargo build --release --locked
 
 FROM debian:trixie-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --uid 10001 radiant
+    && useradd --system --uid 10001 radiant \
+    && mkdir /data && chown radiant /data
 COPY --from=build /src/target/release/radiant /usr/local/bin/radiant
 USER radiant
-ENV RADIANT_LISTEN=0.0.0.0:8080 RADIANT_LOG_FORMAT=json
+ENV RADIANT_LISTEN=0.0.0.0:8080 \
+    RADIANT_LOG_FORMAT=json \
+    RADIANT_DB_PATH=/data/radiant.db \
+    RADIANT_FS_ROOT=/data/blobs
+VOLUME /data
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/radiant"]

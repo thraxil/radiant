@@ -57,7 +57,7 @@ impl Default for EncodeSettings {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum ImagingError {
     #[error("unsupported or unrecognised image format")]
     Unsupported,
