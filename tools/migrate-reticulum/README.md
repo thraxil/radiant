@@ -24,7 +24,8 @@ scan  ──► state.db ──► run ──► radiant
     carries on where it stopped.
   - Anything that doesn't fit the layout is logged and kept in the state file as an
     *anomaly*.
-- **`run`** takes each image that isn't done yet:
+- **`run [UPLOAD_DIR...]`** scans any directories it's given first, then takes each image that
+  isn't done yet:
   1. Asks radiant whether it already has the image. This is a conditional GET, which
      radiant answers from its catalog with a 304. If radiant has it, the image is marked
      `present`.
@@ -83,16 +84,21 @@ every image.
 M=migrate_reticulum.py
 STATE=/var/lib/radiant-migrate/state.db    # keep on local disk (SQLite), not NFS
 
-python3 $M --state $STATE scan /var/data/reticulum/uploads
-
 export RADIANT_UPLOAD_KEY=…                 # or --key-file /path/to/key
-python3 $M --state $STATE run --radiant http://radiant.lan:8080
+python3 $M run /var/data/reticulum/uploads --state $STATE --radiant http://radiant.lan:8080
 
 python3 $M --state $STATE status            # any time, also while run is going
 python3 $M --state $STATE failures          # TSV: hash, status, kind, attempts, error, paths
 python3 $M --state $STATE failures --anomalies
 python3 $M --state $STATE verify --radiant http://radiant.lan:8080
 ```
+
+Options can go before or after the command, in any order.
+- `run UPLOAD_DIR…` scans first, then uploads. On a restart, the scan skips the prefixes it
+  has already finished, so it is quick.
+- `scan` on its own is useful for counting what there is before uploading anything.
+- An option that doesn't apply to the command, such as `--limit` with `scan`, is an error
+  rather than being silently ignored.
 
 The upload key is read from `$RADIANT_UPLOAD_KEY` or from `--key-file`, never from a
 command-line argument, so it doesn't show up in `ps`.
@@ -109,7 +115,7 @@ For a run that lasts days, start it in `tmux`/`screen`, or as a transient unit:
 
 ```sh
 systemd-run --user --unit radiant-migrate -E RADIANT_UPLOAD_KEY=… \
-  python3 $PWD/$M --state $STATE run --radiant http://radiant.lan:8080
+  python3 $PWD/$M run /var/data/reticulum/uploads --state $STATE --radiant http://radiant.lan:8080
 ```
 
 ## Migrating a multi-node reticulum

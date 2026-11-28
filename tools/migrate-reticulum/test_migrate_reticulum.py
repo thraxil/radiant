@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
 import json
@@ -365,6 +366,54 @@ class MigrateTest(unittest.TestCase):
         self.assertEqual(len(lines), 2)
         self.assertTrue(lines[1].startswith(bad + "\tfailed\trejected\t1\tHTTP 400"))
         self.assertNotIn(ok, out.getvalue())
+
+
+    def test_options_in_any_order_and_run_scans_directories_first(self):
+        h = put_original(self.root, b"one step")
+        # The command line from the bug report: options before the command, directory after.
+        rc = m.main(["--radiant", self.radiant.url, "--state", self.state, "--no-log-file",
+                     "run", self.root, "--limit", "1000"], stopper=m.Stopper())
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.statuses(), {h: "migrated"})
+
+
+class ArgsTest(unittest.TestCase):
+    def parse(self, *argv):
+        return m.parse_args(list(argv))
+
+    def error(self, *argv) -> str:
+        err = io.StringIO()
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(err):
+            self.parse(*argv)
+        return err.getvalue()
+
+    def test_order_does_not_matter(self):
+        forms = [
+            ("--state", "s.db", "run", "--radiant", "http://r", "--workers", "2", "/up"),
+            ("run", "/up", "--radiant", "http://r", "--state", "s.db", "--workers", "2"),
+            ("--workers", "2", "--radiant", "http://r", "--state", "s.db", "run", "/up"),
+        ]
+        for argv in forms:
+            a = self.parse(*argv)
+            self.assertEqual((a.command, a.roots, a.radiant, a.workers, a.state),
+                             ("run", ["/up"], "http://r", 2, "s.db"), argv)
+
+    def test_defaults(self):
+        a = self.parse("run", "--state", "s.db", "--radiant", "http://r")
+        self.assertEqual((a.workers, a.retries, a.timeout, a.limit, a.retry_failed),
+                         (4, 5, 120.0, 0, False))
+        self.assertEqual(self.parse("failures", "--state", "s.db").which, "all")
+
+    def test_errors(self):
+        self.assertIn("needs --radiant", self.error("run", "--state", "s.db"))
+        self.assertIn("needs at least one UPLOAD_DIR", self.error("scan", "--state", "s.db"))
+        self.assertIn("--limit doesn't apply to scan",
+                      self.error("scan", "/up", "--state", "s.db", "--limit", "3"))
+        self.assertIn("--radiant doesn't apply to status",
+                      self.error("status", "--state", "s.db", "--radiant", "http://r"))
+        self.assertIn("doesn't take upload directories",
+                      self.error("verify", "/up", "--state", "s.db", "--radiant", "http://r"))
+        self.assertIn("invalid choice", self.error("upload", "--state", "s.db"))
 
 
 class HelpersTest(unittest.TestCase):

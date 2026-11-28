@@ -687,54 +687,105 @@ def upload_key(args: argparse.Namespace) -> Optional[str]:
     return os.environ.get("RADIANT_UPLOAD_KEY")
 
 
-def parse_args(argv: Sequence[str]) -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description="Migrate reticulum originals into radiant.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    p.add_argument("--state", required=True, help="SQLite state file (created if missing)")
-    p.add_argument("--log-file", help="also append logs here (default: <state>.log)")
-    p.add_argument("--no-log-file", action="store_true", help="log to stderr only")
-    p.add_argument("-v", "--verbose", action="store_true", help="log every image")
-    sub = p.add_subparsers(dest="command", required=True)
+COMMANDS = {
+    "scan": "record the originals in reticulum upload directories",
+    "run": "upload recorded originals to radiant (scanning any UPLOAD_DIRs given first)",
+    "verify": "check that radiant has every migrated image",
+    "status": "print counts",
+    "failures": "list images that couldn't be migrated (TSV)",
+}
 
-    s = sub.add_parser("scan", help="record the originals in reticulum upload directories")
-    s.add_argument("roots", nargs="+", metavar="UPLOAD_DIR")
-    s.add_argument("--rescan", action="store_true",
+# Options each command accepts, besides --state, --log-file, --no-log-file and -v.
+RADIANT_OPTIONS = {"radiant", "timeout", "workers"}
+COMMAND_OPTIONS = {
+    "scan": {"rescan"},
+    "run": RADIANT_OPTIONS | {
+        "rescan", "key_file", "retry_failed", "no_check_existing", "retries", "backoff",
+        "rate", "limit", "max_consecutive_errors", "progress_interval"},
+    "verify": RADIANT_OPTIONS,
+    "status": set(),
+    "failures": {"which", "anomalies"},
+}
+
+DEFAULTS = {
+    "timeout": 120.0, "workers": 4, "retries": 5, "backoff": 2.0, "rate": 0.0, "limit": 0,
+    "max_consecutive_errors": 20, "progress_interval": 60.0, "which": "all",
+}
+
+
+def parse_args(argv: Sequence[str]) -> argparse.Namespace:
+    """One flat parser, so the command, directories and options can come in any order."""
+    p = argparse.ArgumentParser(
+        usage="%(prog)s COMMAND [UPLOAD_DIR ...] --state FILE [options]",
+        description="Migrate reticulum originals into radiant. Options may go before or "
+                    "after the command.",
+        epilog="commands:\n" + "\n".join(f"  {c:<10}{h}" for c, h in COMMANDS.items()),
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("command", choices=COMMANDS, metavar="COMMAND")
+    p.add_argument("roots", nargs="*", metavar="UPLOAD_DIR",
+                   help="reticulum upload directories (scan, run)")
+
+    g = p.add_argument_group("all commands")
+    g.add_argument("--state", required=True, help="SQLite state file (created if missing)")
+    g.add_argument("--log-file", help="also append logs here (default: <state>.log)")
+    g.add_argument("--no-log-file", action="store_true", default=None,
+                   help="log to stderr only")
+    g.add_argument("-v", "--verbose", action="store_true", default=None, help="log every image")
+
+    g = p.add_argument_group("scan, run")
+    g.add_argument("--rescan", action="store_true", default=None,
                    help="walk prefixes already scanned (to find images uploaded since)")
 
-    def radiant_args(sp: argparse.ArgumentParser) -> None:
-        sp.add_argument("--radiant", required=True, help="radiant base URL")
-        sp.add_argument("--timeout", type=float, default=120, help="per-request timeout (s)")
-        sp.add_argument("--workers", type=int, default=4, help="concurrent requests")
+    g = p.add_argument_group("run, verify")
+    g.add_argument("--radiant", metavar="URL", help="radiant base URL (required)")
+    g.add_argument("--timeout", type=float, help="per-request timeout in seconds (120)")
+    g.add_argument("--workers", type=int, help="concurrent requests (4)")
 
-    r = sub.add_parser("run", help="upload recorded originals to radiant")
-    radiant_args(r)
-    r.add_argument("--key-file", help="file holding the upload key "
+    g = p.add_argument_group("run")
+    g.add_argument("--key-file", help="file holding the upload key "
                    "(default: $RADIANT_UPLOAD_KEY, if set)")
-    r.add_argument("--retry-failed", action="store_true",
+    g.add_argument("--retry-failed", action="store_true", default=None,
                    help="also retry images that failed permanently")
-    r.add_argument("--no-check-existing", action="store_true",
+    g.add_argument("--no-check-existing", action="store_true", default=None,
                    help="upload without asking radiant whether it already has the image")
-    r.add_argument("--retries", type=int, default=5,
-                   help="retries per image for temporary errors, before moving on")
-    r.add_argument("--backoff", type=float, default=2.0,
-                   help="first retry delay (s); doubles each retry, up to 60")
-    r.add_argument("--rate", type=float, default=0, help="max images started per second (0: no limit)")
-    r.add_argument("--limit", type=int, default=0, help="stop after this many images (0: all)")
-    r.add_argument("--max-consecutive-errors", type=int, default=20,
-                   help="stop when this many images in a row fail with temporary errors")
-    r.add_argument("--progress-interval", type=float, default=60, help="seconds between progress lines")
+    g.add_argument("--retries", type=int,
+                   help="retries per image for temporary errors, before moving on (5)")
+    g.add_argument("--backoff", type=float,
+                   help="first retry delay in seconds; doubles each retry, up to 60 (2)")
+    g.add_argument("--rate", type=float, help="max images started per second (0: no limit)")
+    g.add_argument("--limit", type=int, help="stop after this many images (0: all)")
+    g.add_argument("--max-consecutive-errors", type=int,
+                   help="stop when this many images in a row fail with temporary errors (20)")
+    g.add_argument("--progress-interval", type=float,
+                   help="seconds between progress lines (60)")
 
-    v = sub.add_parser("verify", help="check that radiant has every migrated image")
-    radiant_args(v)
-
-    sub.add_parser("status", help="print counts")
-
-    f = sub.add_parser("failures", help="list images that couldn't be migrated (TSV)")
-    f.add_argument("--status", choices=("retry", "failed", "all"), default="all")
-    f.add_argument("--anomalies", action="store_true",
+    g = p.add_argument_group("failures")
+    g.add_argument("--status", dest="which", choices=("retry", "failed", "all"),
+                   help="which failures to list (all)")
+    g.add_argument("--anomalies", action="store_true", default=None,
                    help="list layout anomalies found by scan instead")
-    return p.parse_args(argv)
+
+    args = p.parse_intermixed_args(argv)
+
+    allowed = COMMAND_OPTIONS[args.command] | {"state", "log_file", "no_log_file", "verbose"}
+    for action in p._actions:
+        if action.option_strings and action.dest != "help" and action.dest not in allowed \
+                and getattr(args, action.dest) is not None:
+            p.error(f"{action.option_strings[-1]} doesn't apply to {args.command}")
+    if args.roots and args.command not in ("scan", "run"):
+        p.error(f"{args.command} doesn't take upload directories")
+    if args.command == "scan" and not args.roots:
+        p.error("scan needs at least one UPLOAD_DIR")
+    if args.command in ("run", "verify") and not args.radiant:
+        p.error(f"{args.command} needs --radiant URL")
+
+    for dest, value in DEFAULTS.items():
+        if getattr(args, dest) is None:
+            setattr(args, dest, value)
+    for dest in ("no_log_file", "verbose", "rescan", "retry_failed", "no_check_existing",
+                 "anomalies"):
+        setattr(args, dest, bool(getattr(args, dest)))
+    return args
 
 
 def main(argv: Optional[Sequence[str]] = None, stopper: Optional[Stopper] = None) -> int:
@@ -748,10 +799,11 @@ def main(argv: Optional[Sequence[str]] = None, stopper: Optional[Stopper] = None
             status(db)
             return 0
         if args.command == "failures":
-            failures(db, args.status, args.anomalies)
+            failures(db, args.which, args.anomalies)
             return 0
-        if args.command == "scan":
+        if args.roots:
             scan(db, args.roots, args.rescan)
+        if args.command == "scan":
             return 0
         if stopper is None:
             stopper = Stopper()
