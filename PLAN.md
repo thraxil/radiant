@@ -284,7 +284,7 @@ and each can also be passed as a CLI flag.
 
 ## Milestones
 
-Status: M0–M8 are done. M9 (migration tool) is next.
+Status: M0–M9 are done.
 
 - **M0 Skeleton**: `cargo init`, axum app, config, tracing, `/healthz`, CI (fmt, clippy, test),
   Nix packaging, Dockerfile.
@@ -299,9 +299,12 @@ Status: M0–M8 are done. M9 (migration tool) is next.
 - **M6 Hardening**: all limits, timeouts, metrics, graceful shutdown.
 - **M7 S3 backend**: `object_store`, S3 integration tests (versitygw).
 - **M8 Cask backend**: reqwest client, multi-node failover, integration tests against a real cluster.
-- **M9 Migration tool**: `radiant import` that walks a reticulum upload directory
-  (`aa/bb/…/full.<ext>`) and pushes originals into the configured backend. Existing scaled
-  versions could optionally be imported into the catalog as well.
+- **M9 Migration tool**: `tools/migrate-reticulum/migrate_reticulum.py`, a standalone Python
+  script (stdlib only) rather than part of radiant. It scans reticulum upload directories
+  (`aa/bb/…/full.<ext>`) into a SQLite state file, then uploads each original through radiant's
+  `POST /`, after checking the SHA-1 of the copy and asking radiant whether it already has the
+  image. It is resumable, retries temporary errors, and records permanent failures. Scaled
+  versions are not migrated; radiant re-renders them. See its README.
 - **Later**: AVIF/JPEG XL, a small admin/dashboard page, an optional "Accept"-based format
   negotiation.
 
@@ -337,3 +340,6 @@ Status: M0–M8 are done. M9 (migration tool) is next.
   leave their old blobs behind.
 - Single-flight: the first request for a missing variant spawns the render. Later requests
   wait on it. The render is stored even if every waiter times out or disconnects.
+- Migration is a separate Python script that talks to radiant over HTTP, not a radiant
+  subcommand. It runs on the reticulum nodes, needs nothing installed, and exercises the same
+  upload path as live traffic (hash check, sniffing, limits).

@@ -44,6 +44,8 @@
             pkgs.versitygw
             # Cask nodes for scripts/test-cask.sh
             caskPkg
+            # tools/migrate-reticulum
+            pkgs.python3
           ];
 
           RUST_BACKTRACE = "1";

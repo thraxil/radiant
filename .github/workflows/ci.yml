@@ -22,6 +22,8 @@ jobs:
         run: nix develop --command scripts/test-s3.sh
       - name: test against a Cask cluster
         run: nix develop --command scripts/test-cask.sh
+      - name: test the reticulum migration script
+        run: nix develop --command python3 -m unittest discover -s tools/migrate-reticulum -v
 
   docker:
     runs-on: ubuntu-26.04
